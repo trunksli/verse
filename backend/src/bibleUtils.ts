@@ -7,19 +7,32 @@ interface BibleBook {
   chapters: string[][];
 }
 
-const biblePath = path.join(__dirname, 'bible-kjv.json');
-let bibleData: BibleBook[] = [];
+// Resolve from the compiled dist/ dir first, then fall back to src/ so the
+// module works whether it runs via ts-node (src) or after `tsc` (dist).
+const candidatePaths = [
+  path.join(__dirname, 'bible-kjv.json'),
+  path.join(__dirname, '..', 'src', 'bible-kjv.json'),
+];
 
-try {
-  let fileContent = fs.readFileSync(biblePath, 'utf8');
-  // Strip UTF-8 BOM if present (common in GitHub raw downloads)
-  if (fileContent.charCodeAt(0) === 0xFEFF) {
-    fileContent = fileContent.slice(1);
+function loadBible(): BibleBook[] {
+  for (const candidate of candidatePaths) {
+    if (!fs.existsSync(candidate)) continue;
+    let fileContent = fs.readFileSync(candidate, 'utf8');
+    // Strip UTF-8 BOM if present (common in GitHub raw downloads)
+    if (fileContent.charCodeAt(0) === 0xFEFF) {
+      fileContent = fileContent.slice(1);
+    }
+    return JSON.parse(fileContent);
   }
-  bibleData = JSON.parse(fileContent);
-} catch (error) {
-  console.error('Error loading bible-kjv.json:', error);
+  // Failing loudly here beats booting a server that silently discards every
+  // verse as "unverifiable" because the database never loaded.
+  throw new Error(
+    `Could not load bible-kjv.json. Looked in:\n  ${candidatePaths.join('\n  ')}\n` +
+      `Run \`node download.js\` to fetch it, and make sure the build copies it into dist/.`
+  );
 }
+
+const bibleData: BibleBook[] = loadBible();
 
 const aliasMap = new Map<string, string>();
 
@@ -137,9 +150,41 @@ export interface VerseResult {
   text: string;
 }
 
+// Curly braces in this KJV source mean two different things, and they have to
+// be treated differently:
+//
+//   1. Translator's notes  -- "{firmament: Heb. expansion}". These gloss a word
+//      and are not part of the verse. They always contain a colon (or, in four
+//      cases across the whole corpus, an explicit "Heb."/"or," marker).
+//      These get dropped entirely.
+//
+//   2. Supplied words -- "{is}", "{was}", "{and}". Italicised in printed KJVs
+//      to show they were added for English grammar and have no counterpart in
+//      the Hebrew/Greek. They ARE part of the verse. These get unwrapped.
+//
+// Supplied words outnumber notes ~29,000 to ~140, so deleting both classes
+// (the previous behaviour) mangled 56% of all verses -- Psalm 23:1 came out as
+// "The LORD my shepherd; I shall not want."
+const TRANSLATOR_NOTE = /\{[^}]*(?::|\b(?:Heb|Gr|Chal|Sam)\.|,\s*or,)[^}]*\}/g;
+const SUPPLIED_WORDS = /\{([^}]*)\}/g;
+
+export function cleanVerseText(raw: string): string {
+  return raw
+    .replace(TRANSLATOR_NOTE, '')
+    .replace(SUPPLIED_WORDS, '$1')
+    // Four verses in this source (e.g. Romans 16:27) carry an unbalanced brace
+    // that neither pass above can pair up. Drop any orphans left behind.
+    .replace(/[{}]/g, '')
+    .replace(/\s+([,;:.!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * Fetches the text for a given book, chapter, and verse range.
- * Cleans up KJV bracket notation {was} and {Heb. ...}
+ * Returns null if the reference does not resolve, which is what lets the
+ * caller filter out hallucinated citations. See cleanVerseText for how the
+ * KJV's brace notation is handled.
  */
 export function getVersesText(
   bookName: string,
@@ -179,14 +224,7 @@ export function getVersesText(
   const versesList: string[] = [];
   
   for (let i = startIdx; i <= clampedEndIdx; i++) {
-    // KJV files often contain translators notes in curly braces: e.g. "{was}" or "{Heb. ...}"
-    // We clean these up so they read as a modern, clean verse
-    const cleanText = chapter[i]
-      .replace(/\{[^}]*\}/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    
-    versesList.push(`${i + 1} ${cleanText}`);
+    versesList.push(`${i + 1} ${cleanVerseText(chapter[i])}`);
   }
   
   const formattedRef = `${resolvedBookName} ${chapterNum}:${verseStart}${

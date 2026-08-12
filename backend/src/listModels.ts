@@ -14,11 +14,12 @@ const ai = new GoogleGenAI({ apiKey });
 async function run() {
   try {
     console.log('Fetching available models...');
-    const response = await ai.models.list();
+    // models.list() returns an async-iterable Pager, not a { models: [] } object.
+    const pager = await ai.models.list();
     console.log('\n--- Supported Models ---');
-    for (const model of response.models || []) {
+    for await (const model of pager) {
       console.log(`- ${model.name} (DisplayName: ${model.displayName})`);
-      console.log(`  Supported Methods: ${model.supportedGenerationMethods?.join(', ')}`);
+      console.log(`  Supported Methods: ${model.supportedActions?.join(', ')}`);
     }
   } catch (error: any) {
     console.error('Failed to list models:', error.message || error);
