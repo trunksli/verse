@@ -1,8 +1,11 @@
-# Render blueprint for the Scripture Guide API.
+# Render blueprint for Scripture Guide.
 #
-# Deploys the Express backend only. The Expo frontend ships through the app
-# stores / EAS, so it is not part of this blueprint -- it just needs to point
-# at whatever URL this service gets.
+# Two services from one repo:
+#   verse-api  -- the Express backend (the only thing that talks to Gemini)
+#   verse-web  -- the Expo app exported as a static site for browsers
+#
+# iOS and Android ship separately through EAS / the app stores; they build from
+# the same frontend/ source and just need EXPO_PUBLIC_API_URL pointed at the API.
 #
 # Setup: Render Dashboard -> New -> Blueprint -> pick this repo.
 # You will be prompted for GEMINI_API_KEY during creation (see below).
@@ -15,11 +18,10 @@ services:
     # The repo root is the monorepo; the service lives one level down.
     rootDir: backend
 
-    # Free spins down after ~15 min idle, and the next request pays a cold
-    # start of roughly 50 seconds. Fine while developing, but see the note in
-    # the chat about the mobile client having no fetch timeout.
-    # Switch to `starter` when you want it always on.
-    plan: free
+    # Starter stays always on. On `free` the service spins down after ~15 min
+    # idle and the next request pays a ~50s cold start, which the clients would
+    # show as a hang -- neither the web nor the mobile app sets a fetch timeout.
+    plan: starter
 
     # --include=dev is load-bearing. NODE_ENV=production (set below) makes
     # `npm ci` skip devDependencies, which is where typescript lives -- without
@@ -52,3 +54,27 @@ services:
         value: gemini-3.5-flash
 
       # PORT is injected by Render and read by src/index.ts. Do not set it.
+
+  # ---------------------------------------------------------------------------
+  # The browser build of the Expo app. Static files only -- no server, no
+  # secrets. It calls verse-api above for everything.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: verse-web
+    runtime: static
+    rootDir: frontend
+
+    # app.json sets web.output = "static", so this pre-renders one HTML file per
+    # route (index / explore / saved) into dist/ rather than a single SPA shell.
+    buildCommand: npm ci && npx expo export --platform web
+    staticPublishPath: dist
+
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+
+      # Baked into the JS bundle at build time, so it is public by design -- it
+      # is only a URL. The Gemini key never comes near this service.
+      # Changing it requires a rebuild, not just a restart.
+      - key: EXPO_PUBLIC_API_URL
+        value: https://verse-api-kngh.onrender.com
