@@ -1,0 +1,54 @@
+# Render blueprint for the Scripture Guide API.
+#
+# Deploys the Express backend only. The Expo frontend ships through the app
+# stores / EAS, so it is not part of this blueprint -- it just needs to point
+# at whatever URL this service gets.
+#
+# Setup: Render Dashboard -> New -> Blueprint -> pick this repo.
+# You will be prompted for GEMINI_API_KEY during creation (see below).
+
+services:
+  - type: web
+    name: verse-api
+    runtime: node
+
+    # The repo root is the monorepo; the service lives one level down.
+    rootDir: backend
+
+    # Free spins down after ~15 min idle, and the next request pays a cold
+    # start of roughly 50 seconds. Fine while developing, but see the note in
+    # the chat about the mobile client having no fetch timeout.
+    # Switch to `starter` when you want it always on.
+    plan: free
+
+    # --include=dev is load-bearing. NODE_ENV=production (set below) makes
+    # `npm ci` skip devDependencies, which is where typescript lives -- without
+    # this flag the build fails with "tsc: not found".
+    #
+    # `npm run build` runs tsc AND the copy:data step that puts bible-kjv.json
+    # into dist/. Both are required; the server throws on boot without the JSON.
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+
+    # GET /health returns 200 once Express is listening. Render uses this to
+    # decide a deploy succeeded and to route traffic away from bad instances.
+    healthCheckPath: /health
+
+    envVars:
+      # Matches the Node version the code was built and tested against.
+      - key: NODE_VERSION
+        value: "24"
+
+      - key: NODE_ENV
+        value: production
+
+      # sync: false means "prompt me, don't read it from this file". Render
+      # asks for the value at blueprint creation and stores it encrypted.
+      # Never put the real key in this file -- it is committed to the repo.
+      - key: GEMINI_API_KEY
+        sync: false
+
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
+
+      # PORT is injected by Render and read by src/index.ts. Do not set it.
