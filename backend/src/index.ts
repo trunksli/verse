@@ -3,6 +3,17 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { getVersesText } from './bibleUtils';
+import {
+  SELECTION_GUIDANCE,
+  buildRequestDirective,
+  recordServedReferences,
+} from './verseSelection';
+import {
+  buildCorsOptions,
+  createRateLimiter,
+  allowedOrigins,
+  MAX_QUERY_LENGTH,
+} from './security';
 
 // Load environment variables
 dotenv.config();
@@ -10,9 +21,24 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Enable CORS so our mobile and web applications can talk to the server
-app.use(cors());
-app.use(express.json());
+// Render and Cloudflare both sit in front of us; without this every request
+// looks like it came from the proxy and the rate limiter would bucket all users
+// together. See clientIp() for how the real address is recovered.
+app.set('trust proxy', true);
+
+// Only our own web origin may call this from a browser. Native apps send no
+// Origin header and are unaffected.
+app.use(cors(buildCorsOptions()));
+
+// Queries are a sentence or two; anything larger is not a real user.
+app.use(express.json({ limit: '16kb' }));
+
+// The Gemini key is metered, so the expensive endpoint gets a per-IP budget.
+// Generous for a person seeking guidance, hostile to a script in a loop.
+const adviseRateLimit = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX ?? 20),
+});
 
 // Initialize the Google Gen AI client
 const apiKey = process.env.GEMINI_API_KEY;
@@ -38,6 +64,8 @@ Tone & Style:
 - Warm, empathetic, non-judgmental, and deeply respectful.
 - Focus on encouraging and comforting the user.
 - Do not say "As an AI..." or "I am a language model...". Keep the identity of a dedicated scripture guide.
+
+${SELECTION_GUIDANCE}
 
 Output Structure:
 You must output a JSON object matching the requested schema.
@@ -81,11 +109,17 @@ interface LLMResponse {
   verses: LLMVerse[];
 }
 
-app.post('/api/advise', async (req, res) => {
+app.post('/api/advise', adviseRateLimit, async (req, res) => {
   const { query } = req.body;
 
   if (!query || typeof query !== 'string' || query.trim().length === 0) {
     return res.status(400).json({ error: 'Query parameter is required and must be a non-empty string.' });
+  }
+
+  if (query.length > MAX_QUERY_LENGTH) {
+    return res.status(413).json({
+      error: `Query is too long. Please keep it under ${MAX_QUERY_LENGTH} characters.`,
+    });
   }
 
   if (!apiKey) {
@@ -95,7 +129,7 @@ app.post('/api/advise', async (req, res) => {
   try {
     const response = await ai.models.generateContent({
       model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
-      contents: query,
+      contents: buildRequestDirective(query),
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: 'application/json',
@@ -125,6 +159,11 @@ app.post('/api/advise', async (req, res) => {
         console.warn(`Filtering out hallucinated/invalid verse reference: ${verse.book} ${verse.chapter}:${verse.verseStart}`);
       }
     }
+
+    // Feed verified picks back into the recent-history window so the next caller
+    // gets something different. Only verified references are recorded -- a
+    // hallucinated one should not suppress a real verse later.
+    recordServedReferences(verifiedVerses.map((v) => v.reference));
 
     // Return the response with verified scriptures (including off-topic pivoted results)
     return res.json({

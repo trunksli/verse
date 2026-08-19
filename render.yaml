@@ -53,6 +53,17 @@ services:
       - key: GEMINI_MODEL
         value: gemini-3.5-flash
 
+      # Browser origins allowed to call the API. Native apps send no Origin
+      # header and are unaffected. Comma-separated; overrides the built-in
+      # default in src/security.ts.
+      - key: ALLOWED_ORIGINS
+        value: https://balmody.com,https://www.balmody.com
+
+      # Requests per IP per 10 minutes against /api/advise. Bounds what an
+      # abusive script can spend on the Gemini key.
+      - key: RATE_LIMIT_MAX
+        value: "20"
+
       # PORT is injected by Render and read by src/index.ts. Do not set it.
 
   # ---------------------------------------------------------------------------
